@@ -1,0 +1,28 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Hero from '../components/Hero.astro';
+import WorldMap from '../components/WorldMap.astro';
+import KeyDialog from '../components/KeyDialog.astro';
+import AudioControl from '../components/AudioControl.astro';
+---
+
+<Layout>
+  <main>
+    <!-- Audio control (top-right corner, always visible) -->
+    <AudioControl />
+
+    <!-- Screen 1: Hero with VALENTINE → VAL OR KEY animation -->
+    <Hero />
+
+    <!-- Screen 2: Cross-country map with plane -->
+    <WorldMap />
+
+    <!-- Hidden message dialog (triggered by key icon) -->
+    <KeyDialog />
+
+    <!-- Footer -->
+    <footer class="py-12 text-center text-sm text-gray-400 font-sans">
+      <p>The Valor Key · Made with love · 5 / 21 / 2026</p>
+    </footer>
+  </main>
+</Layout>

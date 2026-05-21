@@ -1,0 +1,161 @@
+---
+import data from '../data/data.json';
+
+const { fromWord, toWord, title, subtitleLine1, subtitleLine2 } = data.hero;
+const fromLetters = fromWord.split('');
+// toWord 是 ["VAL", "OR", "KEY"]
+---
+
+<section class="relative min-h-screen flex flex-col items-center justify-center px-6 py-12 overflow-hidden">
+  <!-- 背景径向渐变光晕 -->
+  <div class="absolute inset-0 pointer-events-none -z-10">
+    <div class="absolute top-10 left-1/4 w-96 h-96 rounded-full bg-tiffany/10 blur-3xl"></div>
+    <div class="absolute bottom-10 right-1/4 w-96 h-96 rounded-full bg-pink-soft/20 blur-3xl"></div>
+  </div>
+
+  <!-- VALENTINE → VAL OR KEY 动画区域 -->
+  <div id="hero-stage" class="relative w-full max-w-4xl mx-auto flex flex-col items-center text-center">
+
+    <!-- Phase 1: VALENTINE -->
+    <div id="phase-valentine" class="hero-phase">
+      <h1 class="text-6xl md:text-8xl lg:text-9xl font-serif font-black tracking-wider text-tiffany">
+        {fromLetters.map((letter, i) => (
+          <span class="hero-letter inline-block" data-letter={letter} style={`animation-delay: ${i * 80}ms`}>
+            {letter}
+          </span>
+        ))}
+      </h1>
+    </div>
+
+    <!-- Phase 2: VAL OR KEY -->
+    <div id="phase-valorkey" class="hero-phase opacity-0 absolute inset-0 flex flex-col items-center justify-center">
+      <h1 class="text-5xl md:text-7xl lg:text-8xl font-serif font-black tracking-wider flex items-center gap-4 md:gap-8">
+        <span class="text-tiffany">VAL</span>
+        <span class="relative inline-flex flex-col items-center">
+          <!-- 钥匙 SVG 图案,出现在 OR 上方 -->
+          <svg id="key-icon-inline" class="absolute -top-16 md:-top-20 w-12 md:w-16 h-12 md:h-16 opacity-0 transition-opacity duration-1000" viewBox="0 0 64 64" fill="none">
+            <circle cx="20" cy="32" r="10" stroke="#0ABAB5" stroke-width="3" fill="none"/>
+            <line x1="30" y1="32" x2="56" y2="32" stroke="#0ABAB5" stroke-width="3"/>
+            <line x1="46" y1="32" x2="46" y2="42" stroke="#0ABAB5" stroke-width="3"/>
+            <line x1="52" y1="32" x2="52" y2="40" stroke="#0ABAB5" stroke-width="3"/>
+          </svg>
+          <span class="text-pink-soft">OR</span>
+        </span>
+        <span class="text-tiffany">KEY</span>
+      </h1>
+    </div>
+
+    <!-- Phase 3: Final title + subtitle -->
+    <div id="phase-final" class="hero-phase opacity-0 absolute inset-0 flex flex-col items-center justify-center">
+      <h1 class="text-4xl md:text-6xl lg:text-7xl font-serif font-black text-tiffany mb-8 tracking-wider">
+        {title}
+      </h1>
+      <p class="text-3xl md:text-5xl font-serif text-gray-700 mb-2">
+        {subtitleLine1}
+      </p>
+      <p class="text-3xl md:text-5xl font-serif text-pink-soft font-semibold">
+        {subtitleLine2}
+      </p>
+
+      <!-- Clickable key icon below -->
+      <button id="key-trigger" aria-label="Open hidden message" class="mt-12 key-icon-pulse focus:outline-none focus:ring-2 focus:ring-tiffany focus:ring-offset-2 rounded-full p-2">
+        <svg class="w-10 h-10 md:w-12 md:h-12 text-tiffany" viewBox="0 0 64 64" fill="none">
+          <circle cx="20" cy="32" r="10" stroke="currentColor" stroke-width="3" fill="none"/>
+          <line x1="30" y1="32" x2="56" y2="32" stroke="currentColor" stroke-width="3"/>
+          <line x1="46" y1="32" x2="46" y2="42" stroke="currentColor" stroke-width="3"/>
+          <line x1="52" y1="32" x2="52" y2="40" stroke="currentColor" stroke-width="3"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Scroll indicator: 外层做定位,内层做 bounce 动画(避免 transform 冲突) -->
+  <div id="scroll-indicator" class="absolute bottom-8 left-1/2 -translate-x-1/2 opacity-0 transition-opacity duration-1000 pointer-events-none">
+    <div class="scroll-bounce flex flex-col items-center text-gray-500 text-sm font-sans">
+      <span class="mb-2">Scroll</span>
+      <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M19 9l-7 7-7-7"/>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<style>
+  .hero-phase {
+    transition: opacity 1.2s ease-in-out;
+  }
+
+  .hero-letter {
+    opacity: 0;
+    animation: letterAppear 0.6s ease-out forwards;
+  }
+
+  @keyframes letterAppear {
+    0% { opacity: 0; transform: translateY(20px) scale(0.8); }
+    100% { opacity: 1; transform: translateY(0) scale(1); }
+  }
+</style>
+
+<script>
+  /**
+   * Hero animation timeline:
+   * 0.0-2.0s: VALENTINE 字母逐个淡入
+   * 2.0-3.5s: VALENTINE 淡出 → VAL OR KEY 淡入
+   * 3.5-4.8s: 钥匙图案在 OR 上方淡入
+   * 4.8-6.5s: VAL OR KEY 淡出 → final title + subtitle 淡入
+   * 6.5s+: scroll indicator 出现
+   */
+
+  function runHeroAnimation() {
+    const phaseValentine = document.getElementById('phase-valentine');
+    const phaseValorkey = document.getElementById('phase-valorkey');
+    const phaseFinal = document.getElementById('phase-final');
+    const keyIconInline = document.getElementById('key-icon-inline');
+    const scrollIndicator = document.getElementById('scroll-indicator');
+
+    // T+2.0s: 切换到 VAL OR KEY
+    setTimeout(() => {
+      if (phaseValentine) phaseValentine.style.opacity = '0';
+      if (phaseValorkey) phaseValorkey.style.opacity = '1';
+    }, 2000);
+
+    // T+3.5s: 钥匙图案淡入
+    setTimeout(() => {
+      if (keyIconInline) keyIconInline.style.opacity = '1';
+    }, 3500);
+
+    // T+4.8s: 切换到 final
+    setTimeout(() => {
+      if (phaseValorkey) phaseValorkey.style.opacity = '0';
+      if (phaseFinal) phaseFinal.style.opacity = '1';
+    }, 4800);
+
+    // T+6.5s: scroll indicator
+    setTimeout(() => {
+      if (scrollIndicator) scrollIndicator.style.opacity = '1';
+    }, 6500);
+  }
+
+  // 等 DOM 准备好就启动
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', runHeroAnimation);
+  } else {
+    runHeroAnimation();
+  }
+
+  // Key trigger 点击事件——打开隐藏消息
+  document.addEventListener('DOMContentLoaded', () => {
+    const keyTrigger = document.getElementById('key-trigger');
+    if (keyTrigger) {
+      keyTrigger.addEventListener('click', () => {
+        const dialog = document.getElementById('hidden-message-dialog');
+        if (dialog) {
+          dialog.classList.remove('hidden');
+          // Force reflow then add opacity
+          dialog.offsetHeight;
+          dialog.classList.add('opacity-100');
+        }
+      });
+    }
+  });
+</script>

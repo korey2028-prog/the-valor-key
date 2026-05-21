@@ -1,0 +1,58 @@
+{
+  "meta": {
+    "title": "The Valor Key · For Valentina",
+    "description": "A 5/21 memorial space — Happy Valentina's Day"
+  },
+  "hero": {
+    "fromWord": "VALENTINE",
+    "toWord": ["VAL", "OR", "KEY"],
+    "title": "The Valor Key",
+    "subtitleLine1": "Happy Valentina's Day",
+    "subtitleLine2": "May 21, 2026"
+  },
+  "hiddenMessage": {
+    "hungarianText": "Gondolok rád, mindig",
+    "chineseTranslation": "我一直在想你",
+    "englishTranslation": "I'm always thinking of you"
+  },
+  "mapSection": {
+    "title": "Where we are"
+  },
+  "cities": [
+    {
+      "id": "budapest",
+      "name": "Budapest",
+      "label": "your home",
+      "hoverText": "Valentina's home",
+      "color": "#FFD1DC",
+      "cx": 180,
+      "cy": 215
+    },
+    {
+      "id": "beijing",
+      "name": "Beijing",
+      "label": "home",
+      "hoverText": "Cory's home",
+      "color": "#0ABAB5",
+      "cx": 790,
+      "cy": 270
+    },
+    {
+      "id": "tianjin",
+      "name": "Tianjin",
+      "label": "our nest",
+      "hoverText": "the city where we meet",
+      "color": "#7FB069",
+      "cx": 805,
+      "cy": 300
+    }
+  ],
+  "flightPath": ["budapest", "tianjin", "beijing", "budapest"],
+  "segmentDuration": 9000,
+  "audio": {
+    "source": "/the-valor-key/audio/city-of-stars-loop.mp3",
+    "loop": true,
+    "autoplay": false,
+    "volume": 0.3
+  }
+}
