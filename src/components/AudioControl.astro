@@ -1,7 +1,9 @@
 ---
-// AudioControl: 用 Web Audio API 在客户端实时生成一段温暖的 ambient pad loop
-// 4 个柔和和弦循环(Em → D → C → Bm),每个和弦 4 秒,总 loop 16 秒
-// 零文件依赖、零版权风险、即点即播
+// AudioControl: 用 Tone.js 生成温暖的电钢琴式 ambient pad loop
+// - PolySynth(FMSynth) 模拟温暖钢琴音色
+// - Reverb + Low-pass filter 增加空间感和柔和度
+// - 4 个和弦循环(Em → D → C → Bm)
+// - 自动处理 iOS / WeChat 浏览器的 audio unmute
 ---
 
 <!-- Floating audio control button in top-right corner -->
@@ -24,161 +26,141 @@
       <circle cx="6" cy="18" r="3"/>
       <circle cx="18" cy="16" r="3"/>
     </svg>
+    <!-- Loading icon -->
+    <svg id="icon-loading" class="w-6 h-6 text-tiffany hidden animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <circle cx="12" cy="12" r="10" stroke-opacity="0.25"/>
+      <path d="M12 2a10 10 0 0 1 10 10"/>
+    </svg>
   </button>
 </div>
 
 <script>
-  /**
-   * Ambient pad generator using Web Audio API
-   * - 4 chords loop: Em → D → C → Bm (warm minor progression)
-   * - Each chord lasts 4 seconds, total loop 16 seconds
-   * - Multiple sine + triangle oscillators per chord with ADSR envelope
-   * - Soft reverb-like effect via low-pass filtered delay
-   */
+  import * as Tone from 'tone';
 
   document.addEventListener('DOMContentLoaded', () => {
     const toggleBtn = document.getElementById('audio-toggle');
     const iconMuted = document.getElementById('icon-muted');
     const iconPlaying = document.getElementById('icon-playing');
+    const iconLoading = document.getElementById('icon-loading');
 
-    let audioCtx: AudioContext | null = null;
-    let masterGain: GainNode | null = null;
     let isPlaying = false;
-    let loopTimeout: number | null = null;
+    let isInitialized = false;
+    let synth: Tone.PolySynth | null = null;
+    let loop: Tone.Loop | null = null;
+    let chordIndex = 0;
 
-    // Chord progression (Em → D → C → Bm), each chord = 3 frequencies (root, fifth, third up an octave)
-    const chords: number[][] = [
-      [82.41, 123.47, 329.63],  // E2, B2, E4 (Em-ish)
-      [73.42, 110.00, 293.66],  // D2, A2, D4 (D)
-      [65.41, 98.00,  261.63],  // C2, G2, C4 (C)
-      [61.74, 92.50,  246.94],  // B1, F#2, B3 (Bm)
+    // Chord progression: Em → D → C → Bm (warm minor progression)
+    // Each chord = 4 notes (root + voicings)
+    const chords: string[][] = [
+      ['E2', 'E3', 'G3', 'B3'],   // Em
+      ['D2', 'D3', 'F#3', 'A3'],  // D
+      ['C2', 'C3', 'E3', 'G3'],   // C
+      ['B1', 'B2', 'D3', 'F#3'],  // Bm
     ];
 
-    const CHORD_DURATION = 4; // seconds per chord
-    const LOOP_DURATION = chords.length * CHORD_DURATION;
-
-    function initAudioCtx() {
-      if (audioCtx) return;
-      // @ts-ignore - webkitAudioContext for older Safari
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      audioCtx = new Ctx();
-
-      // Master gain (低音量,因为是背景音乐)
-      masterGain = audioCtx.createGain();
-      masterGain.gain.value = 0.15;
-
-      // 低通滤波器,让声音更柔和
-      const filter = audioCtx.createBiquadFilter();
-      filter.type = 'lowpass';
-      filter.frequency.value = 1200;
-      filter.Q.value = 0.5;
-
-      masterGain.connect(filter).connect(audioCtx.destination);
+    function showIcon(name: 'muted' | 'playing' | 'loading') {
+      iconMuted?.classList.toggle('hidden', name !== 'muted');
+      iconPlaying?.classList.toggle('hidden', name !== 'playing');
+      iconLoading?.classList.toggle('hidden', name !== 'loading');
     }
 
-    function playChord(freqs: number[], startTime: number) {
-      if (!audioCtx || !masterGain) return;
+    async function initAudio() {
+      if (isInitialized) return;
 
-      freqs.forEach((freq, idx) => {
-        // 主振荡器: sine 波(温暖、纯净)
-        const osc1 = audioCtx!.createOscillator();
-        osc1.frequency.value = freq;
-        osc1.type = 'sine';
-
-        // 副振荡器: triangle 波(增加一点点泛音色彩)
-        const osc2 = audioCtx!.createOscillator();
-        osc2.frequency.value = freq * 2; // 上方八度
-        osc2.type = 'triangle';
-
-        // 每个音符的 gain envelope
-        const noteGain = audioCtx!.createGain();
-        noteGain.gain.setValueAtTime(0, startTime);
-
-        // ADSR envelope
-        const attackTime = 1.2;  // 慢起,温柔
-        const sustainLevel = idx === 0 ? 0.35 : (idx === 2 ? 0.18 : 0.25); // 根音稍重
-        noteGain.gain.linearRampToValueAtTime(sustainLevel, startTime + attackTime);
-        noteGain.gain.setValueAtTime(sustainLevel, startTime + CHORD_DURATION - 1.5);
-        noteGain.gain.exponentialRampToValueAtTime(0.001, startTime + CHORD_DURATION - 0.1);
-
-        // Secondary osc (triangle) 音量更小
-        const osc2Gain = audioCtx!.createGain();
-        osc2Gain.gain.value = 0.15;
-
-        osc1.connect(noteGain);
-        osc2.connect(osc2Gain).connect(noteGain);
-        noteGain.connect(masterGain!);
-
-        osc1.start(startTime);
-        osc1.stop(startTime + CHORD_DURATION);
-        osc2.start(startTime);
-        osc2.stop(startTime + CHORD_DURATION);
-      });
-    }
-
-    function startLoop() {
-      if (!audioCtx) return;
-
-      const startTime = audioCtx.currentTime;
-
-      // Schedule all chords in the current loop iteration
-      chords.forEach((chord, i) => {
-        playChord(chord, startTime + i * CHORD_DURATION);
+      // 温暖的电钢琴式音色——用 FMSynth 模拟
+      synth = new Tone.PolySynth(Tone.FMSynth, {
+        harmonicity: 1.2,
+        modulationIndex: 2.5,
+        oscillator: { type: 'sine' },
+        modulation: { type: 'sine' },
+        envelope: {
+          attack: 0.8,
+          decay: 1.2,
+          sustain: 0.4,
+          release: 3.5,
+        },
+        modulationEnvelope: {
+          attack: 0.3,
+          decay: 0.1,
+          sustain: 0.8,
+          release: 1.5,
+        },
       });
 
-      // Schedule next loop iteration
-      loopTimeout = window.setTimeout(() => {
-        if (isPlaying) startLoop();
-      }, LOOP_DURATION * 1000 - 200); // 略提前接续,避免接缝
+      // 效果链: Reverb(空间感) → Filter(柔和) → Destination
+      const reverb = new Tone.Reverb({
+        decay: 7,
+        wet: 0.55,
+      });
+      await reverb.generate(); // 生成 reverb impulse response
+
+      const filter = new Tone.Filter({
+        type: 'lowpass',
+        frequency: 1600,
+        rolloff: -12,
+        Q: 0.4,
+      });
+
+      synth.chain(reverb, filter, Tone.Destination);
+
+      // 主音量 (dB) ——比 Web Audio API 0.15 要安静很多
+      Tone.Destination.volume.value = -18;
+
+      // BPM 慢一些,呼吸感
+      Tone.Transport.bpm.value = 50;
+
+      // 每个和弦持续时间(4n = 一拍,约 1.2s @ 50bpm; 2n = 半小节,约 2.4s)
+      loop = new Tone.Loop((time) => {
+        if (synth) {
+          synth.triggerAttackRelease(chords[chordIndex], '2n', time);
+          chordIndex = (chordIndex + 1) % chords.length;
+        }
+      }, '2n');
+
+      isInitialized = true;
     }
 
-    function startMusic() {
-      initAudioCtx();
-      if (!audioCtx) return;
+    async function startMusic() {
+      try {
+        showIcon('loading');
 
-      // iOS / WeChat 浏览器要求用户手势 resume()
-      if (audioCtx.state === 'suspended') {
-        audioCtx.resume();
+        // iOS / WeChat 关键: Tone.start() 必须在 user gesture 内调用
+        await Tone.start();
+
+        await initAudio();
+
+        if (loop) {
+          chordIndex = 0;
+          loop.start(0);
+          Tone.Transport.start();
+        }
+
+        isPlaying = true;
+        showIcon('playing');
+        toggleBtn?.setAttribute('aria-pressed', 'true');
+      } catch (err) {
+        console.error('Audio start failed:', err);
+        showIcon('muted');
       }
-
-      isPlaying = true;
-      startLoop();
-
-      iconMuted?.classList.add('hidden');
-      iconPlaying?.classList.remove('hidden');
-      toggleBtn?.setAttribute('aria-pressed', 'true');
     }
 
     function stopMusic() {
+      if (loop) {
+        loop.stop();
+      }
+      Tone.Transport.stop();
+      Tone.Transport.cancel();
+
       isPlaying = false;
-      if (loopTimeout !== null) {
-        clearTimeout(loopTimeout);
-        loopTimeout = null;
-      }
-
-      // 直接 suspend,音符自然衰减
-      if (audioCtx && audioCtx.state === 'running') {
-        // 让 masterGain 渐弱
-        if (masterGain) {
-          masterGain.gain.cancelScheduledValues(audioCtx.currentTime);
-          masterGain.gain.setValueAtTime(masterGain.gain.value, audioCtx.currentTime);
-          masterGain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.5);
-          setTimeout(() => {
-            if (masterGain) masterGain.gain.value = 0.15;
-          }, 600);
-        }
-      }
-
-      iconPlaying?.classList.add('hidden');
-      iconMuted?.classList.remove('hidden');
+      showIcon('muted');
       toggleBtn?.setAttribute('aria-pressed', 'false');
     }
 
-    toggleBtn?.addEventListener('click', () => {
+    toggleBtn?.addEventListener('click', async () => {
       if (isPlaying) {
         stopMusic();
       } else {
-        startMusic();
+        await startMusic();
       }
     });
   });
