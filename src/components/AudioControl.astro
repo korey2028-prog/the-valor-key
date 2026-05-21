@@ -1,9 +1,5 @@
 ---
-// AudioControl: 用 Tone.js 生成温暖的电钢琴式 ambient pad loop
-// - PolySynth(FMSynth) 模拟温暖钢琴音色
-// - Reverb + Low-pass filter 增加空间感和柔和度
-// - 4 个和弦循环(Em → D → C → Bm)
-// - 自动处理 iOS / WeChat 浏览器的 audio unmute
+// AudioControl: Tone.js + iOS unsilence trick + proper user-gesture handling
 ---
 
 <!-- Floating audio control button in top-right corner -->
@@ -37,6 +33,10 @@
 <script>
   import * as Tone from 'tone';
 
+  // 关键: 一段极短的 silent WAV (base64) 用来 unsilence iOS 物理静音开关
+  // 在 user gesture 中 play() 这个 element,会让 iOS 把页面识别为媒体播放,绕过静音开关限制
+  const SILENT_WAV_DATA = 'data:audio/wav;base64,UklGRpYDAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YXIDAAAAAAAA';
+
   document.addEventListener('DOMContentLoaded', () => {
     const toggleBtn = document.getElementById('audio-toggle');
     const iconMuted = document.getElementById('icon-muted');
@@ -46,16 +46,26 @@
     let isPlaying = false;
     let isInitialized = false;
     let synth: Tone.PolySynth | null = null;
+    let synthGain: Tone.Gain | null = null;
     let loop: Tone.Loop | null = null;
     let chordIndex = 0;
 
-    // Chord progression: Em → D → C → Bm (warm minor progression)
-    // Each chord = 4 notes (root + voicings)
+    // Silent audio element - 用于 iOS unsilence trick
+    // 必须在 DOM 中 + loop 以维持 audio session
+    const silentEl = document.createElement('audio');
+    silentEl.preload = 'auto';
+    silentEl.loop = true;
+    silentEl.controls = false;
+    silentEl.style.display = 'none';
+    silentEl.src = SILENT_WAV_DATA;
+    document.body.appendChild(silentEl);
+
+    // Chord progression: Em → D → C → Bm (warm minor)
     const chords: string[][] = [
-      ['E2', 'E3', 'G3', 'B3'],   // Em
-      ['D2', 'D3', 'F#3', 'A3'],  // D
-      ['C2', 'C3', 'E3', 'G3'],   // C
-      ['B1', 'B2', 'D3', 'F#3'],  // Bm
+      ['E2', 'E3', 'G3', 'B3'],
+      ['D2', 'D3', 'F#3', 'A3'],
+      ['C2', 'C3', 'E3', 'G3'],
+      ['B1', 'B2', 'D3', 'F#3'],
     ];
 
     function showIcon(name: 'muted' | 'playing' | 'loading') {
@@ -67,49 +77,54 @@
     async function initAudio() {
       if (isInitialized) return;
 
-      // 温暖的电钢琴式音色——用 FMSynth 模拟
+      // 温暖的电钢琴音色
       synth = new Tone.PolySynth(Tone.FMSynth, {
         harmonicity: 1.2,
         modulationIndex: 2.5,
         oscillator: { type: 'sine' },
         modulation: { type: 'sine' },
         envelope: {
-          attack: 0.8,
-          decay: 1.2,
-          sustain: 0.4,
-          release: 3.5,
+          attack: 0.5,
+          decay: 1.0,
+          sustain: 0.7, // 提高 sustain - 让音量更饱满
+          release: 3.0,
         },
         modulationEnvelope: {
-          attack: 0.3,
+          attack: 0.2,
           decay: 0.1,
           sustain: 0.8,
-          release: 1.5,
+          release: 1.2,
         },
       });
 
-      // 效果链: Reverb(空间感) → Filter(柔和) → Destination
-      const reverb = new Tone.Reverb({
-        decay: 7,
-        wet: 0.55,
-      });
-      await reverb.generate(); // 生成 reverb impulse response
+      // 加 synth-level gain 控制 - 接近最大,然后用 Destination 调全局
+      synthGain = new Tone.Gain(0.85);
 
+      // Reverb 空间感
+      const reverb = new Tone.Reverb({
+        decay: 6,
+        wet: 0.5,
+      });
+      await reverb.generate();
+
+      // Low-pass filter 柔和度
       const filter = new Tone.Filter({
         type: 'lowpass',
-        frequency: 1600,
+        frequency: 1800,
         rolloff: -12,
-        Q: 0.4,
+        Q: 0.5,
       });
 
-      synth.chain(reverb, filter, Tone.Destination);
+      // 信号链: Synth → SynthGain → Reverb → Filter → Destination
+      synth.chain(synthGain, reverb, filter, Tone.Destination);
 
-      // 主音量 (dB) ——比 Web Audio API 0.15 要安静很多
-      Tone.Destination.volume.value = -18;
+      // 主音量从 -18 → -6 dB (约 0.5 振幅, 4 倍提升)
+      Tone.Destination.volume.value = -6;
 
-      // BPM 慢一些,呼吸感
+      // BPM
       Tone.Transport.bpm.value = 50;
 
-      // 每个和弦持续时间(4n = 一拍,约 1.2s @ 50bpm; 2n = 半小节,约 2.4s)
+      // 4 个和弦循环
       loop = new Tone.Loop((time) => {
         if (synth) {
           synth.triggerAttackRelease(chords[chordIndex], '2n', time);
@@ -120,15 +135,49 @@
       isInitialized = true;
     }
 
-    async function startMusic() {
+    // 主点击处理 - 注意: Tone.start() 必须在 user gesture **同步**触发
+    toggleBtn?.addEventListener('click', async () => {
+      if (isPlaying) {
+        // 停止
+        if (loop) loop.stop();
+        Tone.Transport.stop();
+        Tone.Transport.cancel();
+
+        // 也停止 silent audio (释放 audio session)
+        silentEl.pause();
+        silentEl.currentTime = 0;
+
+        isPlaying = false;
+        showIcon('muted');
+        toggleBtn?.setAttribute('aria-pressed', 'false');
+        return;
+      }
+
+      // === 启动 - 关键的 user gesture 内同步操作 ===
+
+      // 1. 立即播放 silent audio - **关键: 不 await,同步触发**
+      //    这会让 iOS 识别为媒体播放,绕过静音开关
+      const silentPlayPromise = silentEl.play();
+      if (silentPlayPromise) {
+        silentPlayPromise.catch((err) => {
+          console.warn('Silent audio play failed (this is OK on some browsers):', err);
+        });
+      }
+
+      // 2. 立即触发 Tone.start() - 也不要 await 先,保持 user gesture state
+      const toneStartPromise = Tone.start();
+
+      // 3. UI 变 loading
+      showIcon('loading');
+
       try {
-        showIcon('loading');
+        // 4. 等待 Tone 启动
+        await toneStartPromise;
 
-        // iOS / WeChat 关键: Tone.start() 必须在 user gesture 内调用
-        await Tone.start();
-
+        // 5. 初始化 audio chain (只第一次)
         await initAudio();
 
+        // 6. 启动 loop
         if (loop) {
           chordIndex = 0;
           loop.start(0);
@@ -139,28 +188,9 @@
         showIcon('playing');
         toggleBtn?.setAttribute('aria-pressed', 'true');
       } catch (err) {
-        console.error('Audio start failed:', err);
+        console.error('Audio failed:', err);
         showIcon('muted');
-      }
-    }
-
-    function stopMusic() {
-      if (loop) {
-        loop.stop();
-      }
-      Tone.Transport.stop();
-      Tone.Transport.cancel();
-
-      isPlaying = false;
-      showIcon('muted');
-      toggleBtn?.setAttribute('aria-pressed', 'false');
-    }
-
-    toggleBtn?.addEventListener('click', async () => {
-      if (isPlaying) {
-        stopMusic();
-      } else {
-        await startMusic();
+        alert('Audio failed: ' + (err as Error).message);
       }
     });
   });
