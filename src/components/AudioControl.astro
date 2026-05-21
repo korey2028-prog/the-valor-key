@@ -1,7 +1,7 @@
 ---
-import data from '../data/data.json';
-
-const { source, loop, volume } = data.audio;
+// AudioControl: 用 Web Audio API 在客户端实时生成一段温暖的 ambient pad loop
+// 4 个柔和和弦循环(Em → D → C → Bm),每个和弦 4 秒,总 loop 16 秒
+// 零文件依赖、零版权风险、即点即播
 ---
 
 <!-- Floating audio control button in top-right corner -->
@@ -12,13 +12,13 @@ const { source, loop, volume } = data.audio;
     aria-label="Toggle background music"
     aria-pressed="false"
   >
-    <!-- Default: muted icon -->
+    <!-- Muted icon (default) -->
     <svg id="icon-muted" class="w-6 h-6 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <path d="M11 5L6 9H2v6h4l5 4V5z"/>
       <line x1="23" y1="9" x2="17" y2="15"/>
       <line x1="17" y1="9" x2="23" y2="15"/>
     </svg>
-    <!-- When playing: music icon -->
+    <!-- Playing icon -->
     <svg id="icon-playing" class="w-6 h-6 text-tiffany hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <path d="M9 18V5l12-2v13"/>
       <circle cx="6" cy="18" r="3"/>
@@ -27,47 +27,158 @@ const { source, loop, volume } = data.audio;
   </button>
 </div>
 
-<!-- Audio element (hidden) -->
-<audio
-  id="bg-audio"
-  src={source}
-  loop={loop}
-  preload="auto"
-></audio>
+<script>
+  /**
+   * Ambient pad generator using Web Audio API
+   * - 4 chords loop: Em → D → C → Bm (warm minor progression)
+   * - Each chord lasts 4 seconds, total loop 16 seconds
+   * - Multiple sine + triangle oscillators per chord with ADSR envelope
+   * - Soft reverb-like effect via low-pass filtered delay
+   */
 
-<script define:vars={{ volume }}>
   document.addEventListener('DOMContentLoaded', () => {
-    const audio = document.getElementById('bg-audio');
     const toggleBtn = document.getElementById('audio-toggle');
     const iconMuted = document.getElementById('icon-muted');
     const iconPlaying = document.getElementById('icon-playing');
 
-    if (audio) {
-      audio.volume = volume;
+    let audioCtx: AudioContext | null = null;
+    let masterGain: GainNode | null = null;
+    let isPlaying = false;
+    let loopTimeout: number | null = null;
+
+    // Chord progression (Em → D → C → Bm), each chord = 3 frequencies (root, fifth, third up an octave)
+    const chords: number[][] = [
+      [82.41, 123.47, 329.63],  // E2, B2, E4 (Em-ish)
+      [73.42, 110.00, 293.66],  // D2, A2, D4 (D)
+      [65.41, 98.00,  261.63],  // C2, G2, C4 (C)
+      [61.74, 92.50,  246.94],  // B1, F#2, B3 (Bm)
+    ];
+
+    const CHORD_DURATION = 4; // seconds per chord
+    const LOOP_DURATION = chords.length * CHORD_DURATION;
+
+    function initAudioCtx() {
+      if (audioCtx) return;
+      // @ts-ignore - webkitAudioContext for older Safari
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new Ctx();
+
+      // Master gain (低音量,因为是背景音乐)
+      masterGain = audioCtx.createGain();
+      masterGain.gain.value = 0.15;
+
+      // 低通滤波器,让声音更柔和
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 1200;
+      filter.Q.value = 0.5;
+
+      masterGain.connect(filter).connect(audioCtx.destination);
     }
 
-    let isPlaying = false;
+    function playChord(freqs: number[], startTime: number) {
+      if (!audioCtx || !masterGain) return;
 
-    toggleBtn?.addEventListener('click', async () => {
-      if (!audio) return;
+      freqs.forEach((freq, idx) => {
+        // 主振荡器: sine 波(温暖、纯净)
+        const osc1 = audioCtx!.createOscillator();
+        osc1.frequency.value = freq;
+        osc1.type = 'sine';
 
-      try {
-        if (isPlaying) {
-          audio.pause();
-          isPlaying = false;
-          iconPlaying?.classList.add('hidden');
-          iconMuted?.classList.remove('hidden');
-          toggleBtn.setAttribute('aria-pressed', 'false');
-        } else {
-          await audio.play();
-          isPlaying = true;
-          iconMuted?.classList.add('hidden');
-          iconPlaying?.classList.remove('hidden');
-          toggleBtn.setAttribute('aria-pressed', 'true');
+        // 副振荡器: triangle 波(增加一点点泛音色彩)
+        const osc2 = audioCtx!.createOscillator();
+        osc2.frequency.value = freq * 2; // 上方八度
+        osc2.type = 'triangle';
+
+        // 每个音符的 gain envelope
+        const noteGain = audioCtx!.createGain();
+        noteGain.gain.setValueAtTime(0, startTime);
+
+        // ADSR envelope
+        const attackTime = 1.2;  // 慢起,温柔
+        const sustainLevel = idx === 0 ? 0.35 : (idx === 2 ? 0.18 : 0.25); // 根音稍重
+        noteGain.gain.linearRampToValueAtTime(sustainLevel, startTime + attackTime);
+        noteGain.gain.setValueAtTime(sustainLevel, startTime + CHORD_DURATION - 1.5);
+        noteGain.gain.exponentialRampToValueAtTime(0.001, startTime + CHORD_DURATION - 0.1);
+
+        // Secondary osc (triangle) 音量更小
+        const osc2Gain = audioCtx!.createGain();
+        osc2Gain.gain.value = 0.15;
+
+        osc1.connect(noteGain);
+        osc2.connect(osc2Gain).connect(noteGain);
+        noteGain.connect(masterGain!);
+
+        osc1.start(startTime);
+        osc1.stop(startTime + CHORD_DURATION);
+        osc2.start(startTime);
+        osc2.stop(startTime + CHORD_DURATION);
+      });
+    }
+
+    function startLoop() {
+      if (!audioCtx) return;
+
+      const startTime = audioCtx.currentTime;
+
+      // Schedule all chords in the current loop iteration
+      chords.forEach((chord, i) => {
+        playChord(chord, startTime + i * CHORD_DURATION);
+      });
+
+      // Schedule next loop iteration
+      loopTimeout = window.setTimeout(() => {
+        if (isPlaying) startLoop();
+      }, LOOP_DURATION * 1000 - 200); // 略提前接续,避免接缝
+    }
+
+    function startMusic() {
+      initAudioCtx();
+      if (!audioCtx) return;
+
+      // iOS / WeChat 浏览器要求用户手势 resume()
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+
+      isPlaying = true;
+      startLoop();
+
+      iconMuted?.classList.add('hidden');
+      iconPlaying?.classList.remove('hidden');
+      toggleBtn?.setAttribute('aria-pressed', 'true');
+    }
+
+    function stopMusic() {
+      isPlaying = false;
+      if (loopTimeout !== null) {
+        clearTimeout(loopTimeout);
+        loopTimeout = null;
+      }
+
+      // 直接 suspend,音符自然衰减
+      if (audioCtx && audioCtx.state === 'running') {
+        // 让 masterGain 渐弱
+        if (masterGain) {
+          masterGain.gain.cancelScheduledValues(audioCtx.currentTime);
+          masterGain.gain.setValueAtTime(masterGain.gain.value, audioCtx.currentTime);
+          masterGain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.5);
+          setTimeout(() => {
+            if (masterGain) masterGain.gain.value = 0.15;
+          }, 600);
         }
-      } catch (err) {
-        // 自动播放失败 / 音频源不存在
-        console.warn('Audio playback failed:', err);
+      }
+
+      iconPlaying?.classList.add('hidden');
+      iconMuted?.classList.remove('hidden');
+      toggleBtn?.setAttribute('aria-pressed', 'false');
+    }
+
+    toggleBtn?.addEventListener('click', () => {
+      if (isPlaying) {
+        stopMusic();
+      } else {
+        startMusic();
       }
     });
   });
