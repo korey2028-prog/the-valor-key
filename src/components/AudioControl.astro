@@ -1,8 +1,11 @@
 ---
-// AudioControl: Tone.js + iOS unsilence trick + proper user-gesture handling
+// AudioControl: 最朴素的 HTML5 audio 标签播放预合成的 WAV
+// 跳过所有 Web Audio API / Tone.js,直接用浏览器原生 audio,iOS / 微信 / 桌面统一兼容
+const base = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL.slice(0, -1) : import.meta.env.BASE_URL;
+const audioSrc = `${base}/audio/city-of-stars-loop.wav`;
 ---
 
-<!-- Floating audio control button in top-right corner -->
+<!-- Audio control button (top-right corner) -->
 <div class="fixed top-6 right-6 z-40">
   <button
     id="audio-toggle"
@@ -10,19 +13,16 @@
     aria-label="Toggle background music"
     aria-pressed="false"
   >
-    <!-- Muted icon (default) -->
     <svg id="icon-muted" class="w-6 h-6 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <path d="M11 5L6 9H2v6h4l5 4V5z"/>
       <line x1="23" y1="9" x2="17" y2="15"/>
       <line x1="17" y1="9" x2="23" y2="15"/>
     </svg>
-    <!-- Playing icon -->
     <svg id="icon-playing" class="w-6 h-6 text-tiffany hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <path d="M9 18V5l12-2v13"/>
       <circle cx="6" cy="18" r="3"/>
       <circle cx="18" cy="16" r="3"/>
     </svg>
-    <!-- Loading icon -->
     <svg id="icon-loading" class="w-6 h-6 text-tiffany hidden animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <circle cx="12" cy="12" r="10" stroke-opacity="0.25"/>
       <path d="M12 2a10 10 0 0 1 10 10"/>
@@ -30,43 +30,28 @@
   </button>
 </div>
 
+<!-- 实际的 audio 元素 - 关键: playsinline + preload="auto" 让 iOS 行为最稳 -->
+<audio
+  id="bg-music"
+  src={audioSrc}
+  loop
+  preload="auto"
+  playsinline
+  webkit-playsinline="true"
+></audio>
+
 <script>
-  import * as Tone from 'tone';
-
-  // 关键: 一段极短的 silent WAV (base64) 用来 unsilence iOS 物理静音开关
-  // 在 user gesture 中 play() 这个 element,会让 iOS 把页面识别为媒体播放,绕过静音开关限制
-  const SILENT_WAV_DATA = 'data:audio/wav;base64,UklGRpYDAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YXIDAAAAAAAA';
-
   document.addEventListener('DOMContentLoaded', () => {
+    const audio = document.getElementById('bg-music') as HTMLAudioElement | null;
     const toggleBtn = document.getElementById('audio-toggle');
     const iconMuted = document.getElementById('icon-muted');
     const iconPlaying = document.getElementById('icon-playing');
     const iconLoading = document.getElementById('icon-loading');
 
-    let isPlaying = false;
-    let isInitialized = false;
-    let synth: Tone.PolySynth | null = null;
-    let synthGain: Tone.Gain | null = null;
-    let loop: Tone.Loop | null = null;
-    let chordIndex = 0;
+    if (!audio || !toggleBtn) return;
 
-    // Silent audio element - 用于 iOS unsilence trick
-    // 必须在 DOM 中 + loop 以维持 audio session
-    const silentEl = document.createElement('audio');
-    silentEl.preload = 'auto';
-    silentEl.loop = true;
-    silentEl.controls = false;
-    silentEl.style.display = 'none';
-    silentEl.src = SILENT_WAV_DATA;
-    document.body.appendChild(silentEl);
-
-    // Chord progression: Em → D → C → Bm (warm minor)
-    const chords: string[][] = [
-      ['E2', 'E3', 'G3', 'B3'],
-      ['D2', 'D3', 'F#3', 'A3'],
-      ['C2', 'C3', 'E3', 'G3'],
-      ['B1', 'B2', 'D3', 'F#3'],
-    ];
+    // 默认音量 - 50% 适中
+    audio.volume = 0.5;
 
     function showIcon(name: 'muted' | 'playing' | 'loading') {
       iconMuted?.classList.toggle('hidden', name !== 'muted');
@@ -74,123 +59,46 @@
       iconLoading?.classList.toggle('hidden', name !== 'loading');
     }
 
-    async function initAudio() {
-      if (isInitialized) return;
+    // 监听 audio 事件 - 状态同步
+    audio.addEventListener('play', () => {
+      showIcon('playing');
+      toggleBtn?.setAttribute('aria-pressed', 'true');
+    });
 
-      // 温暖的电钢琴音色
-      synth = new Tone.PolySynth(Tone.FMSynth, {
-        harmonicity: 1.2,
-        modulationIndex: 2.5,
-        oscillator: { type: 'sine' },
-        modulation: { type: 'sine' },
-        envelope: {
-          attack: 0.5,
-          decay: 1.0,
-          sustain: 0.7, // 提高 sustain - 让音量更饱满
-          release: 3.0,
-        },
-        modulationEnvelope: {
-          attack: 0.2,
-          decay: 0.1,
-          sustain: 0.8,
-          release: 1.2,
-        },
-      });
+    audio.addEventListener('pause', () => {
+      showIcon('muted');
+      toggleBtn?.setAttribute('aria-pressed', 'false');
+    });
 
-      // 加 synth-level gain 控制 - 接近最大,然后用 Destination 调全局
-      synthGain = new Tone.Gain(0.85);
-
-      // Reverb 空间感
-      const reverb = new Tone.Reverb({
-        decay: 6,
-        wet: 0.5,
-      });
-      await reverb.generate();
-
-      // Low-pass filter 柔和度
-      const filter = new Tone.Filter({
-        type: 'lowpass',
-        frequency: 1800,
-        rolloff: -12,
-        Q: 0.5,
-      });
-
-      // 信号链: Synth → SynthGain → Reverb → Filter → Destination
-      synth.chain(synthGain, reverb, filter, Tone.Destination);
-
-      // 主音量从 -18 → -6 dB (约 0.5 振幅, 4 倍提升)
-      Tone.Destination.volume.value = -6;
-
-      // BPM
-      Tone.Transport.bpm.value = 50;
-
-      // 4 个和弦循环
-      loop = new Tone.Loop((time) => {
-        if (synth) {
-          synth.triggerAttackRelease(chords[chordIndex], '2n', time);
-          chordIndex = (chordIndex + 1) % chords.length;
-        }
-      }, '2n');
-
-      isInitialized = true;
-    }
-
-    // 主点击处理 - 注意: Tone.start() 必须在 user gesture **同步**触发
-    toggleBtn?.addEventListener('click', async () => {
-      if (isPlaying) {
-        // 停止
-        if (loop) loop.stop();
-        Tone.Transport.stop();
-        Tone.Transport.cancel();
-
-        // 也停止 silent audio (释放 audio session)
-        silentEl.pause();
-        silentEl.currentTime = 0;
-
-        isPlaying = false;
-        showIcon('muted');
-        toggleBtn?.setAttribute('aria-pressed', 'false');
-        return;
-      }
-
-      // === 启动 - 关键的 user gesture 内同步操作 ===
-
-      // 1. 立即播放 silent audio - **关键: 不 await,同步触发**
-      //    这会让 iOS 识别为媒体播放,绕过静音开关
-      const silentPlayPromise = silentEl.play();
-      if (silentPlayPromise) {
-        silentPlayPromise.catch((err) => {
-          console.warn('Silent audio play failed (this is OK on some browsers):', err);
-        });
-      }
-
-      // 2. 立即触发 Tone.start() - 也不要 await 先,保持 user gesture state
-      const toneStartPromise = Tone.start();
-
-      // 3. UI 变 loading
+    audio.addEventListener('waiting', () => {
       showIcon('loading');
+    });
 
-      try {
-        // 4. 等待 Tone 启动
-        await toneStartPromise;
+    audio.addEventListener('error', (e) => {
+      console.error('Audio error:', audio.error);
+      alert(`Audio error code: ${audio.error?.code}\nMessage: ${audio.error?.message || 'unknown'}`);
+      showIcon('muted');
+    });
 
-        // 5. 初始化 audio chain (只第一次)
-        await initAudio();
+    toggleBtn.addEventListener('click', () => {
+      if (audio.paused) {
+        // 关键: play() 必须在 user gesture 同步调用
+        showIcon('loading');
+        const playPromise = audio.play();
 
-        // 6. 启动 loop
-        if (loop) {
-          chordIndex = 0;
-          loop.start(0);
-          Tone.Transport.start();
+        if (playPromise) {
+          playPromise
+            .then(() => {
+              showIcon('playing');
+            })
+            .catch((err) => {
+              console.error('Play failed:', err);
+              alert(`无法播放: ${err.name}\n${err.message}`);
+              showIcon('muted');
+            });
         }
-
-        isPlaying = true;
-        showIcon('playing');
-        toggleBtn?.setAttribute('aria-pressed', 'true');
-      } catch (err) {
-        console.error('Audio failed:', err);
-        showIcon('muted');
-        alert('Audio failed: ' + (err as Error).message);
+      } else {
+        audio.pause();
       }
     });
   });
